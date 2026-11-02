@@ -3,38 +3,38 @@
 AI Assessment Generator & Comparative Evaluation Arena
 ------------------------------------------------------
 Streamlit + Google Gemini (google-genai) + Hugging Face Inference + SQLite3.
- 
 Run:  streamlit run app.py
 """
- 
 import io
 import json
 import sqlite3
 import time
 import uuid
 from datetime import datetime
- 
 import pandas as pd
 import streamlit as st
- 
 # ----------------------------------------------------------------------------
 # HARDCODED CONFIGURATION (edit these constants - never asked in the UI)
 # ----------------------------------------------------------------------------
+# Around lines 20-35:
 GEMINI_API_KEY = ""
-HF_TOKEN = ""
- 
+GROQ_API_KEY = ""  # key removed to upload project here
+
 GEMINI_MODEL = "gemini-3.8-flash"
-HF_MODEL = "mistralai/Mistral-7B-Instruct-v0.3"  # or "meta-llama/Llama-3-8B-Instruct"
- 
+GROQ_MODEL = "openai/gpt-oss-20b"
+
 DB_PATH = "quiz_analytics.db"
-MAX_PDF_PAGES = 10
-MAX_SOURCE_CHARS = 20_000
- 
+MAX_PDF_PAGES = 8
+MAX_SOURCE_CHARS = 12_000
+
 MODEL_LABEL_GEMINI = "Google Gemini"
-MODEL_LABEL_HF = "Hugging Face Mistral-7B"
- 
+MODEL_LABEL_GROQ = "Groq (GPT-OSS-20B)"
+ENGINE_GROQ_OPT = f"Groq LPU Engine ({GROQ_MODEL})"
+
+
+
 ENGINE_GEMINI_OPT = f"Google Gemini ({GEMINI_MODEL})"
-ENGINE_HF_OPT = "Hugging Face Open-Source (Mistral-7B-Instruct)"
+
  
 TYPE_MCQ = "Multiple Choice Questions (MCQs)"
 TYPE_SA = "Short-Answer Questions"
@@ -218,9 +218,9 @@ STUDY MATERIAL:
  
 def _keys_missing(engine: str) -> str | None:
     if engine == "gemini" and (not GEMINI_API_KEY or GEMINI_API_KEY.startswith("YOUR_")):
-        return "GEMINI_API_KEY is missing or still a placeholder. Edit the constant at the top of app.py."
-    if engine == "hf" and (not HF_TOKEN or HF_TOKEN.startswith("YOUR_")):
-        return "HF_TOKEN is missing or still a placeholder. Edit the constant at the top of app.py."
+        return "GEMINI_API_KEY is missing or invalid in aiproject.py."
+    if engine == "groq" and (not GROQ_API_KEY or GROQ_API_KEY.startswith("gsk_PASTE")):
+        return "GROQ_API_KEY is missing or invalid in aiproject.py."
     return None
  
  
@@ -240,19 +240,24 @@ def call_gemini(prompt: str) -> str:
     return resp.text or ""
  
  
-def call_hf(prompt: str) -> str:
-    from huggingface_hub import InferenceClient
- 
-    client = InferenceClient(model=HF_MODEL, token=HF_TOKEN)
-    resp = client.chat_completion(
+def call_groq(prompt: str) -> str:
+    from groq import Groq
+
+    client = Groq(api_key=GROQ_API_KEY)
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
         messages=[
-            {"role": "system", "content": "You output only valid JSON arrays."},
+            {
+                "role": "system",
+                "content": "You are a specialized exam engine. You output strictly raw, valid JSON arrays matching the requested schema. Do not include markdown code fences, prefaces, or conversational text.",
+            },
             {"role": "user", "content": prompt},
         ],
-        max_tokens=2000,
-        temperature=0.4,
+        temperature=0.2,
+        max_tokens=1500,
     )
-    return resp.choices[0].message.content or ""
+    return response.choices[0].message.content or ""
+
  
  
 def parse_json_array(raw: str) -> list:
@@ -323,7 +328,7 @@ def generate_assessment(source: str, engine: str, a_type: str, difficulty: str, 
         raise RuntimeError(problem)
     prompt = build_prompt(source, a_type, difficulty, n)
     t0 = time.perf_counter()
-    raw = call_gemini(prompt) if engine == "gemini" else call_hf(prompt)
+    raw = call_gemini(prompt) if engine == "gemini" else call_groq(prompt)
     latency = time.perf_counter() - t0
     questions = validate_questions(parse_json_array(raw), a_type)
     return questions, latency
@@ -379,8 +384,8 @@ def export_text(meta: dict, questions: list) -> str:
 # ----------------------------------------------------------------------------
 def render_sidebar():
     st.sidebar.title("⚙️ Configuration")
-    engine_choice = st.sidebar.radio("Model Engine", [ENGINE_GEMINI_OPT, ENGINE_HF_OPT])
-    engine = "gemini" if engine_choice == ENGINE_GEMINI_OPT else "hf"
+    engine_choice = st.sidebar.radio("Model Engine", [ENGINE_GEMINI_OPT, ENGINE_GROQ_OPT])
+    engine = "gemini" if engine_choice == ENGINE_GEMINI_OPT else "groq"
  
     st.sidebar.subheader("Assessment Parameters")
     a_type = st.sidebar.selectbox("Assessment Type", [TYPE_MCQ, TYPE_SA])
@@ -420,7 +425,7 @@ def render_generator_tab(engine, a_type, difficulty, n):
             if len(source_text) < 50:
                 st.warning("Please provide at least a few sentences of study material.")
             else:
-                label = MODEL_LABEL_GEMINI if engine == "gemini" else MODEL_LABEL_HF
+                label = MODEL_LABEL_GEMINI if engine == "gemini" else MODEL_LABEL_GROQ
                 with st.spinner(f"Generating with {label}..."):
                     questions, latency = generate_assessment(
                         source_text, engine, a_type, difficulty, n
